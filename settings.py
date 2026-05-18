@@ -11,8 +11,8 @@ from path_manager import path_manager
 class GlobalSettings:
     """全局设置管理类"""
     DEFAULT_SETTINGS = {
-        'window_x': 0,
-        'window_y': 0,
+        'window_x': None,
+        'window_y': None,
         'last_character': None
     }
 
@@ -59,22 +59,31 @@ class GlobalSettings:
     @staticmethod
     def get_startup_folder():
         """获取Windows启动文件夹路径"""
+        if sys.platform != 'win32':
+            return None
+
         try:
             from win32com.shell import shell, shellcon
             return shell.SHGetFolderPath(0, shellcon.CSIDL_STARTUP, None, 0)
         except:
             # 备用方法
-            return os.path.join(os.environ['APPDATA'],
+            appdata = os.environ.get('APPDATA')
+            if not appdata:
+                return None
+            return os.path.join(appdata,
                                 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
 
     @staticmethod
     def open_startup_folder():
         """打开Windows启动文件夹"""
+        if sys.platform != 'win32':
+            return False
+
         try:
             import subprocess
             startup_folder = GlobalSettings.get_startup_folder()
-            if os.path.exists(startup_folder):
-                subprocess.Popen(f'explorer "{startup_folder}"')
+            if startup_folder and os.path.exists(startup_folder):
+                subprocess.Popen(['explorer', startup_folder])
                 return True
             else:
                 print(f"启动文件夹不存在: {startup_folder}")
@@ -292,26 +301,27 @@ class SettingsDialog(QDialog):
         general_widget = QWidget()
         layout = QVBoxLayout(general_widget)
 
-        # 开机自启设置
-        startup_group = QGroupBox('启动设置')
-        startup_layout = QVBoxLayout()
+        # 开机自启设置（仅 Windows 支持启动文件夹）
+        if sys.platform == 'win32':
+            startup_group = QGroupBox('启动设置')
+            startup_layout = QVBoxLayout()
 
-        # 按钮布局
-        button_layout = QHBoxLayout()
+            # 按钮布局
+            button_layout = QHBoxLayout()
 
-        # 开机自启动教学按钮
-        self.startup_guide_btn = QPushButton('开机自启动')
-        self.startup_guide_btn.clicked.connect(self.show_startup_guide)
-        button_layout.addWidget(self.startup_guide_btn)
+            # 开机自启动教学按钮
+            self.startup_guide_btn = QPushButton('开机自启动')
+            self.startup_guide_btn.clicked.connect(self.show_startup_guide)
+            button_layout.addWidget(self.startup_guide_btn)
 
-        # 打开启动文件夹按钮
-        self.open_startup_folder_btn = QPushButton('打开启动文件夹')
-        self.open_startup_folder_btn.clicked.connect(self.open_startup_folder)
-        button_layout.addWidget(self.open_startup_folder_btn)
+            # 打开启动文件夹按钮
+            self.open_startup_folder_btn = QPushButton('打开启动文件夹')
+            self.open_startup_folder_btn.clicked.connect(self.open_startup_folder)
+            button_layout.addWidget(self.open_startup_folder_btn)
 
-        startup_layout.addLayout(button_layout)
-        startup_group.setLayout(startup_layout)
-        layout.addWidget(startup_group)
+            startup_layout.addLayout(button_layout)
+            startup_group.setLayout(startup_layout)
+            layout.addWidget(startup_group)
 
         layout.addStretch()
 
@@ -355,6 +365,10 @@ class SettingsDialog(QDialog):
         """显示开机自启动教学"""
         from PyQt6.QtWidgets import QMessageBox
 
+        if sys.platform != 'win32':
+            QMessageBox.information(self, "开机自启动", "开机自启动教程仅适用于 Windows。")
+            return
+
         program_path = GlobalSettings.get_program_path()
         startup_folder = GlobalSettings.get_startup_folder()
 
@@ -389,6 +403,10 @@ class SettingsDialog(QDialog):
     def open_startup_folder(self):
         """打开Windows启动文件夹"""
         from PyQt6.QtWidgets import QMessageBox
+
+        if sys.platform != 'win32':
+            QMessageBox.information(self, "启动文件夹", "启动文件夹功能仅适用于 Windows。")
+            return
 
         if GlobalSettings.open_startup_folder():
             QMessageBox.information(self, "成功", "已打开启动文件夹")

@@ -1,4 +1,6 @@
 import os
+import sys
+
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QMessageBox
 from PyQt6.QtGui import QAction, QIcon, QPixmap
 from PyQt6.QtCore import Qt
@@ -136,12 +138,13 @@ class TrayManager:
         mouse_passthrough_action.triggered.connect(self.parent.toggle_mouse_passthrough)
         window_settings_menu.addAction(mouse_passthrough_action)
         
-        # 隐藏任务栏开关
-        hide_taskbar_action = QAction('隐藏任务栏 (OBS不可识别)', self.parent)
-        hide_taskbar_action.setCheckable(True)
-        hide_taskbar_action.setChecked(self.parent.hide_taskbar)
-        hide_taskbar_action.triggered.connect(self.parent.toggle_hide_taskbar)
-        window_settings_menu.addAction(hide_taskbar_action)
+        # 隐藏任务栏开关（仅 Windows 支持）
+        if sys.platform == 'win32':
+            hide_taskbar_action = QAction('隐藏任务栏 (OBS不可识别)', self.parent)
+            hide_taskbar_action.setCheckable(True)
+            hide_taskbar_action.setChecked(self.parent.hide_taskbar)
+            hide_taskbar_action.triggered.connect(self.parent.toggle_hide_taskbar)
+            window_settings_menu.addAction(hide_taskbar_action)
     
     def _add_character_menu(self, parent_menu):
         """添加角色切换子菜单"""

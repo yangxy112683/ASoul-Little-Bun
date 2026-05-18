@@ -1,3 +1,5 @@
+import sys
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMessageBox
 
@@ -12,7 +14,7 @@ class WindowManager:
         # 窗口状态
         self.always_on_top = global_settings.get('always_on_top', True)
         self.mouse_passthrough = global_settings.get('mouse_passthrough', False)
-        self.hide_taskbar = global_settings.get('hide_taskbar', True)
+        self.hide_taskbar = global_settings.get('hide_taskbar', True) if sys.platform == 'win32' else False
         self.mouse_locked = global_settings.get('mouse_locked', False)
         self.keyboard_horizontal_offset = global_settings.get('keyboard_horizontal_offset', True)
         self.keypress_display_enabled = global_settings.get('keypress_display_enabled', True)
@@ -49,6 +51,9 @@ class WindowManager:
     
     def toggle_hide_taskbar(self):
         """切换隐藏任务栏状态"""
+        if sys.platform != 'win32':
+            return
+
         if not self.hide_taskbar:
             reply = QMessageBox.question(
                 self.window, 
@@ -118,6 +123,9 @@ class WindowManager:
     
     def apply_hide_taskbar(self):
         """应用隐藏任务栏设置"""
+        if sys.platform != 'win32':
+            return
+
         if self.hide_taskbar:
             self._hide_from_taskbar()
         else:
@@ -125,6 +133,9 @@ class WindowManager:
     
     def _hide_from_taskbar(self):
         """Windows特定方法：隐藏任务栏图标"""
+        if sys.platform != 'win32':
+            return
+
         try:
             import ctypes
             hwnd = int(self.window.winId())
@@ -144,6 +155,9 @@ class WindowManager:
     
     def _show_in_taskbar(self):
         """Windows特定方法：显示任务栏图标"""
+        if sys.platform != 'win32':
+            return
+
         try:
             import ctypes
             hwnd = int(self.window.winId())
@@ -163,6 +177,9 @@ class WindowManager:
     
     def show_first_launch_tip(self):
         """显示首次启动提示"""
+        if sys.platform != 'win32':
+            return
+
         if not self.global_settings.get('first_launch_tip_shown', False):
             tip_text = """
 <h3>OBS 识别提示</h3>
