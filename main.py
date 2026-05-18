@@ -3,9 +3,10 @@ import json
 import os
 import faulthandler
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QDialog, QMessageBox
-from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal, QFileSystemWatcher
 from PyQt6.QtGui import QPainter, QAction, QIcon, QSurfaceFormat, QPixmap
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
@@ -26,6 +27,29 @@ def _debug_log(message):
     now = datetime.now().isoformat(timespec='milliseconds')
     thread = threading.current_thread()
     print(f"[{now}][main][thread={thread.name}:{thread.ident}] {message}", file=sys.stderr, flush=True)
+
+
+NOTIFICATION_DISPLAY_DURATION_MS = 30 * 1000
+NOTIFICATION_TOP_SPACE = 140
+NOTIFICATION_MARGIN = 8
+
+
+class VerticalOffsetSettings:
+    def __init__(self, settings, offset_y):
+        self.settings = settings
+        self.offset_y = offset_y
+
+    def get(self, key, default=None):
+        value = self.settings.get(key, default)
+        if key in {'keyboard_y', 'mouse_y'} and value is not None:
+            return value + self.offset_y
+        return value
+
+    def set(self, key, value):
+        return self.settings.set(key, value)
+
+    def save(self):
+        return self.settings.save()
 
 
 class ASoulLittleBun(QOpenGLWidget):
@@ -65,8 +89,11 @@ class ASoulLittleBun(QOpenGLWidget):
 
         # 从角色管理器获取设置
         self.settings = self.character_manager.settings
+        self.content_offset_y = NOTIFICATION_TOP_SPACE
+        self.display_settings = VerticalOffsetSettings(self.settings, self.content_offset_y)
+        self.content_window_height = self.settings.get('window_height')
         self.window_width = self.settings.get('window_width')
-        self.window_height = self.settings.get('window_height')
+        self.window_height = self.content_window_height + self.content_offset_y
 
         # 初始化系统托盘
         self.tray_manager = TrayManager(self)
@@ -75,9 +102,12 @@ class ASoulLittleBun(QOpenGLWidget):
         # 初始化UI
         self.init_ui()
 
+        # 初始化通知桥接
+        self._init_notification_bridge()
+
         # 初始化输入处理器
         self.input_handler = InputHandler(
-            self.settings,
+            self.display_settings,
             self._handle_key_press,
             self._handle_key_release,
             self._handle_mouse_click,
@@ -85,7 +115,7 @@ class ASoulLittleBun(QOpenGLWidget):
         )
 
         # 初始化鼠标跟踪器
-        self.mouse_tracker = MouseTracker(self.settings, self.mouse_locked)
+        self.mouse_tracker = MouseTracker(self.display_settings, self.mouse_locked)
 
         # 启动监听器
         self.input_handler.start_listeners()
@@ -144,17 +174,38 @@ class ASoulLittleBun(QOpenGLWidget):
         self._update_keypress_display_style()
         self.keypress_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.keypress_display_label.hide()
-        self.keypress_display_label.setGeometry(
-            self.settings.get('keypress_display_x', 10),
-            self.settings.get('keypress_display_y', 10),
-            100, 40
-        )
+        self._update_keypress_display_geometry()
 
         # 按键显示定时器
         self.keypress_display_timer = QTimer()
         self.keypress_display_timer.timeout.connect(
             self._hide_keypress_display)
         self.keypress_display_timer.setSingleShot(True)
+
+        # 创建 hook 通知显示标签，和按键显示一样嵌入 VPet 主窗口内部
+        self.notification_label = QLabel(self)
+        self.notification_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.notification_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.notification_label.setAutoFillBackground(True)
+        self.notification_label.setWordWrap(True)
+        self.notification_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.notification_label.setStyleSheet(
+            "color: #ffffff; "
+            "background-color: rgb(15, 15, 15); "
+            "border: 3px solid rgba(255, 230, 120, 240); "
+            "border-radius: 10px; "
+            "padding: 12px; "
+            "font-size: 18px; "
+            "font-weight: bold;"
+        )
+        self.notification_width = min(420, max(220, self.window_width - NOTIFICATION_MARGIN * 2))
+        self.notification_height = NOTIFICATION_TOP_SPACE - NOTIFICATION_MARGIN * 2
+        self._update_notification_geometry()
+        self.notification_label.hide()
+
+        self.notification_timer = QTimer()
+        self.notification_timer.timeout.connect(self._hide_notification)
+        self.notification_timer.setSingleShot(True)
 
         # 加载当前角色图片
         self.load_character_images()
@@ -216,6 +267,7 @@ class ASoulLittleBun(QOpenGLWidget):
             'right_click': self.right_click_label
         }
         self.character_manager.load_character_images(labels_dict)
+        self._apply_content_vertical_offset()
 
     def create_custom_layers(self):
         """创建自定义图层，并按完整有序列表重排堆叠顺序"""
@@ -269,8 +321,8 @@ class ASoulLittleBun(QOpenGLWidget):
             mouse_y = mouse_geometry.y()
             return base_x + mouse_x, base_y + mouse_y
         else:
-            # 不跟随，使用绝对位置
-            return base_x, base_y
+            # 不跟随，使用绝对位置，并避开顶部通知区域
+            return base_x, base_y + self.content_offset_y
 
     def update_custom_layers_position(self):
         """更新自定义图层位置"""
@@ -437,6 +489,241 @@ class ASoulLittleBun(QOpenGLWidget):
         # 如果 keypress_display 图层没有在图层列表中被处理，则默认将按键显示放在最上层
         if not keypress_display_processed and hasattr(self, 'keypress_display_label'):
             self.keypress_display_label.raise_()
+        if hasattr(self, 'notification_label'):
+            self.notification_label.raise_()
+
+    def _update_notification_geometry(self):
+        if not hasattr(self, 'notification_label'):
+            return
+        x = max(NOTIFICATION_MARGIN, (self.window_width - self.notification_width) // 2)
+        self.notification_label.setGeometry(
+            x,
+            NOTIFICATION_MARGIN,
+            self.notification_width,
+            self.notification_height
+        )
+
+    def _update_keypress_display_geometry(self):
+        if not hasattr(self, 'keypress_display_label'):
+            return
+        self.keypress_display_label.setGeometry(
+            self.settings.get('keypress_display_x', 10),
+            self.settings.get('keypress_display_y', 10) + self.content_offset_y,
+            100,
+            40
+        )
+
+    def _apply_content_vertical_offset(self):
+        offset = self.content_offset_y
+        for label in (
+            self.bg_label,
+            self.keyboard_label,
+            self.mouse_label,
+            self.left_click_label,
+            self.right_click_label,
+        ):
+            geometry = label.geometry()
+            label.setGeometry(
+                geometry.x(),
+                geometry.y() + offset,
+                geometry.width(),
+                geometry.height()
+            )
+
+    def _get_notification_paths(self):
+        codex_home = Path(os.environ.get('CODEX_HOME', Path.home() / '.codex')).expanduser()
+        data_dir = codex_home / 'vup-pet'
+        return {
+            'data_dir': data_dir,
+            'queue': data_dir / 'notifications.jsonl',
+            'cursor': data_dir / 'notification_cursor.json',
+        }
+
+    def _init_notification_bridge(self):
+        self.notification_paths = self._get_notification_paths()
+        self.notification_paths['data_dir'].mkdir(parents=True, exist_ok=True)
+        _debug_log(
+            f"_init_notification_bridge: data_dir={self.notification_paths['data_dir']} "
+            f"queue={self.notification_paths['queue']} cursor={self.notification_paths['cursor']}"
+        )
+
+        self.notification_watcher = QFileSystemWatcher(self)
+        self.notification_watcher.directoryChanged.connect(
+            self._on_notification_bridge_changed)
+        self.notification_watcher.fileChanged.connect(
+            self._on_notification_bridge_changed)
+        self._ensure_notification_watch_paths()
+
+        self.notification_safety_timer = QTimer()
+        self.notification_safety_timer.timeout.connect(self._drain_notifications)
+        self.notification_safety_timer.start(60000)
+        self._drain_notifications()
+
+    def _ensure_notification_watch_paths(self):
+        if not hasattr(self, 'notification_watcher'):
+            return
+
+        data_dir = str(self.notification_paths['data_dir'])
+        watched_dirs = set(self.notification_watcher.directories())
+        if data_dir not in watched_dirs:
+            added = self.notification_watcher.addPath(data_dir)
+            _debug_log(f"_ensure_notification_watch_paths: add directory {data_dir} added={added}")
+
+        for watched_file in list(self.notification_watcher.files()):
+            if not Path(watched_file).exists():
+                self.notification_watcher.removePath(watched_file)
+
+        queue_file = self.notification_paths['queue']
+        watched_files = set(self.notification_watcher.files())
+        if queue_file.exists() and str(queue_file) not in watched_files:
+            added = self.notification_watcher.addPath(str(queue_file))
+            _debug_log(f"_ensure_notification_watch_paths: add file {queue_file} added={added}")
+
+    def _on_notification_bridge_changed(self, path):
+        _debug_log(f"_on_notification_bridge_changed: path={path}")
+        self._ensure_notification_watch_paths()
+        self._drain_notifications()
+
+    def _read_notification_cursor(self):
+        try:
+            with self.notification_paths['cursor'].open('r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+    def _write_notification_cursor(self, last_consumed_id):
+        cursor_file = self.notification_paths['cursor']
+        temp_file = cursor_file.with_name(f'.{cursor_file.name}.tmp')
+        payload = {
+            'lastConsumedId': last_consumed_id,
+            'updatedAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        }
+        try:
+            cursor_file.parent.mkdir(parents=True, exist_ok=True)
+            with temp_file.open('w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write('\n')
+            os.replace(temp_file, cursor_file)
+        except OSError as exc:
+            _debug_log(f"_write_notification_cursor: failed {exc}")
+
+    def _drain_notifications(self):
+        queue_file = self.notification_paths['queue']
+        _debug_log(f"_drain_notifications: enter queue_exists={queue_file.exists()}")
+        if not queue_file.exists():
+            self._ensure_notification_watch_paths()
+            return
+
+        cursor = self._read_notification_cursor()
+        last_consumed_id = cursor.get('lastConsumedId')
+        _debug_log(f"_drain_notifications: last_consumed_id={last_consumed_id}")
+        events = []
+        try:
+            with queue_file.open('r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, dict):
+                        events.append(event)
+        except OSError as exc:
+            _debug_log(f"_drain_notifications: failed {exc}")
+            return
+
+        start_index = 0
+        if last_consumed_id:
+            for index, event in enumerate(events):
+                if event.get('id') == last_consumed_id:
+                    start_index = index + 1
+                    break
+
+        next_events = events[start_index:]
+        _debug_log(
+            f"_drain_notifications: events={len(events)} start_index={start_index} "
+            f"next_events={len(next_events)}"
+        )
+        visible_events = []
+        last_seen_id = None
+        for event in next_events:
+            event_id = event.get('id')
+            if isinstance(event_id, str):
+                last_seen_id = event_id
+            supported = self._is_supported_notification(event)
+            expired = self._is_notification_expired(event) if supported else True
+            _debug_log(
+                f"_drain_notifications: event_id={event_id} source={event.get('source')} "
+                f"event={event.get('event')} level={event.get('level')} supported={supported} expired={expired}"
+            )
+            if supported and not expired:
+                visible_events.append(event)
+
+        _debug_log(f"_drain_notifications: visible_events={len(visible_events)} last_seen_id={last_seen_id}")
+        for event in visible_events:
+            self._show_notification(event)
+
+        if last_seen_id:
+            self._write_notification_cursor(last_seen_id)
+            _debug_log(f"_drain_notifications: cursor updated last_seen_id={last_seen_id}")
+
+    def _is_supported_notification(self, event):
+        source = event.get('source')
+        level = event.get('level')
+        event_name = event.get('event')
+        if source not in {'codex', 'codebuddy', 'launcher'}:
+            return False
+        if level not in {'info', 'success', 'warning', 'error'}:
+            return False
+        if not isinstance(event_name, str) or not event_name:
+            return False
+        return isinstance(event.get('id'), str)
+
+    def _is_notification_expired(self, event):
+        created_at = event.get('createdAt')
+        ttl_seconds = event.get('ttlSeconds')
+        if not isinstance(created_at, str) or not isinstance(ttl_seconds, int):
+            return True
+        try:
+            created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        except ValueError:
+            return True
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - created).total_seconds()
+        return age > ttl_seconds
+
+    def _show_notification(self, event):
+        display_text = event.get('displayText') or event.get('message') or ''
+        display_text = str(display_text).replace('\n', ' ').strip()
+        if not display_text:
+            return
+        if len(display_text) > 120:
+            display_text = display_text[:119] + '…'
+
+        self._update_notification_geometry()
+        _debug_log(
+            f"_show_notification: id={event.get('id')} level={event.get('level')} "
+            f"text={display_text!r} embedded=True parent_is_pet={self.notification_label.parent() is self} "
+            f"window_geometry={self.geometry().getRect()} geometry={self.notification_label.geometry().getRect()} "
+            f"content_offset_y={self.content_offset_y}"
+        )
+        self.notification_label.setText(display_text)
+        self.notification_label.show()
+
+        duration = NOTIFICATION_DISPLAY_DURATION_MS
+        self.notification_timer.start(duration)
+        _debug_log(
+            f"_show_notification: visible={self.notification_label.isVisible()} "
+            f"duration={duration} focus_policy={self.notification_label.focusPolicy().name}"
+        )
+
+    def _hide_notification(self):
+        _debug_log("_hide_notification: hide notification label")
+        self.notification_label.hide()
 
     def pause_input_monitoring(self):
         """暂停输入响应，不销毁 pynput 监听器。"""
@@ -538,6 +825,12 @@ class ASoulLittleBun(QOpenGLWidget):
         self._auto_fit_keypress_font(display_text)
 
         self.keypress_display_label.show()
+        self.keypress_display_label.raise_()
+        _debug_log(
+            f"_show_keypress_display: text={display_text!r} "
+            f"geometry={self.keypress_display_label.geometry().getRect()} "
+            f"content_offset_y={self.content_offset_y}"
+        )
 
         # 重启定时器，1秒后隐藏
         self.keypress_display_timer.start(1000)
@@ -761,7 +1054,7 @@ class ASoulLittleBun(QOpenGLWidget):
         # 如果锁定鼠标，重置位置
         if self.mouse_locked:
             base_x = self.settings.get('mouse_x')
-            base_y = self.settings.get('mouse_y')
+            base_y = self.settings.get('mouse_y') + self.content_offset_y
             mouse_width = self.settings.get('mouse_width')
             mouse_height = self.settings.get('mouse_height')
             self.mouse_label.setGeometry(
@@ -854,17 +1147,20 @@ class ASoulLittleBun(QOpenGLWidget):
 
     def apply_settings(self):
         """应用设置"""
+        self.content_window_height = self.settings.get('window_height')
         self.window_width = self.settings.get('window_width')
-        self.window_height = self.settings.get('window_height')
+        self.window_height = self.content_window_height + self.content_offset_y
+        self.display_settings = VerticalOffsetSettings(self.settings, self.content_offset_y)
         self.resize(self.window_width, self.window_height)
 
-        self.mouse_tracker.update_settings(self.settings)
+        self.input_handler.settings = self.display_settings
+        self.mouse_tracker.update_settings(self.display_settings)
         self._update_keypress_display_style()
-        self.keypress_display_label.setGeometry(
-            self.settings.get('keypress_display_x', 10),
-            self.settings.get('keypress_display_y', 10),
-            100, 40
-        )
+        self._update_keypress_display_geometry()
+        if hasattr(self, 'notification_label'):
+            self.notification_width = min(420, max(220, self.window_width - NOTIFICATION_MARGIN * 2))
+            self.notification_height = NOTIFICATION_TOP_SPACE - NOTIFICATION_MARGIN * 2
+            self._update_notification_geometry()
 
         self.load_character_images()
         self.create_custom_layers()
@@ -873,30 +1169,26 @@ class ASoulLittleBun(QOpenGLWidget):
         """仅更新各图层的几何尺寸（不保存、不重载图片），用于实时预览"""
         s = self.settings
         w = s.get('window_width')
-        h = s.get('window_height')
+        h = s.get('window_height') + self.content_offset_y
         self.resize(w, h)
 
-        self.bg_label.setGeometry(0, 0, s.get('bg_width'), s.get('bg_height'))
+        self.bg_label.setGeometry(0, self.content_offset_y, s.get('bg_width'), s.get('bg_height'))
 
         kb_x = s.get('keyboard_x')
-        kb_y = s.get('keyboard_y')
+        kb_y = s.get('keyboard_y') + self.content_offset_y
         kb_w = s.get('keyboard_width')
         kb_h = s.get('keyboard_height')
         self.keyboard_label.setGeometry(kb_x, kb_y, kb_w, kb_h)
 
         mx = s.get('mouse_x')
-        my = s.get('mouse_y')
+        my = s.get('mouse_y') + self.content_offset_y
         mw = s.get('mouse_width')
         mh = s.get('mouse_height')
         self.mouse_label.setGeometry(mx, my, mw, mh)
         self.left_click_label.setGeometry(mx, my, mw, mh)
         self.right_click_label.setGeometry(mx, my, mw, mh)
 
-        self.keypress_display_label.setGeometry(
-            s.get('keypress_display_x', 10),
-            s.get('keypress_display_y', 10),
-            100, 40
-        )
+        self._update_keypress_display_geometry()
 
     def get_version(self):
         """从version.json文件读取版本号"""
@@ -1060,6 +1352,15 @@ class ASoulLittleBun(QOpenGLWidget):
             self.mouse_timer.stop()
         if hasattr(self, 'custom_layer_timer'):
             self.custom_layer_timer.stop()
+        if hasattr(self, 'notification_timer'):
+            self.notification_timer.stop()
+        if hasattr(self, 'notification_safety_timer'):
+            self.notification_safety_timer.stop()
+        if hasattr(self, 'notification_watcher'):
+            self.notification_watcher.deleteLater()
+        if hasattr(self, 'notification_label'):
+            self.notification_label.hide()
+            self.notification_label.deleteLater()
 
         # 停止监听器
         self.input_handler.stop_listeners()

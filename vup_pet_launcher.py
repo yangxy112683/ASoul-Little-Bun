@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -9,7 +10,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+
 SUPPORTED_STATES = {'idle', 'running', 'waiting', 'review', 'failed'}
+SUPPORTED_NOTIFICATION_SOURCES = {'codex', 'codebuddy', 'launcher'}
+SUPPORTED_NOTIFICATION_LEVELS = {'info', 'success', 'warning', 'error'}
+MAX_NOTIFICATION_QUEUE_SIZE = 1024 * 1024
+NOTIFICATION_LOCK_TIMEOUT_SECONDS = 2.0
 
 
 def utc_now():
@@ -34,6 +44,26 @@ def get_state_file():
 
 def get_log_file():
     return get_data_dir() / 'launcher.log'
+
+
+def get_notification_file():
+    return get_data_dir() / 'notifications.jsonl'
+
+
+def get_rotated_notification_file():
+    return get_data_dir() / 'notifications.jsonl.1'
+
+
+def get_notification_cursor_file():
+    return get_data_dir() / 'notification_cursor.json'
+
+
+def get_notification_lock_file():
+    return get_data_dir() / 'notifications.lock'
+
+
+def get_hook_log_file():
+    return Path('/tmp/vup-pet-hook-notify.log')
 
 
 def get_project_root():
@@ -104,11 +134,132 @@ def write_state(state, message):
     })
 
 
+def log_hook_error(message):
+    try:
+        with get_hook_log_file().open('a', encoding='utf-8') as f:
+            f.write(f'[{utc_now()}] {message}\n')
+    except OSError:
+        pass
+
+
+def truncate_text(text, limit=120):
+    text = str(text or '').replace('\n', ' ').strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + '…'
+
+
+def notification_title(source):
+    return {
+        'codex': 'Codex',
+        'codebuddy': 'CodeBuddy',
+        'launcher': 'VUP Pet',
+    }.get(source, source)
+
+
+def build_notification_event(source, event, message, level='info', ttl_seconds=120, raw=None):
+    if source not in SUPPORTED_NOTIFICATION_SOURCES:
+        raise ValueError(f'unsupported notification source: {source}')
+    if level not in SUPPORTED_NOTIFICATION_LEVELS:
+        raise ValueError(f'unsupported notification level: {level}')
+
+    created_at = utc_now()
+    title = notification_title(source)
+    message = truncate_text(message or 'Notification')
+    display_text = truncate_text(f'{title}: {message}')
+    digest = hashlib.sha1(f'{created_at}:{source}:{event}:{message}'.encode('utf-8')).hexdigest()[:8]
+    event_id = f'{created_at}-{source}-{event.lower()}-{digest}'
+    payload = {
+        'id': event_id,
+        'source': source,
+        'event': event,
+        'level': level,
+        'title': title,
+        'message': message,
+        'displayText': display_text,
+        'createdAt': created_at,
+        'ttlSeconds': int(ttl_seconds),
+    }
+    if raw is not None:
+        payload['raw'] = raw
+    return payload
+
+
+def rotate_notifications_if_needed():
+    queue_file = get_notification_file()
+    if not queue_file.exists() or queue_file.stat().st_size <= MAX_NOTIFICATION_QUEUE_SIZE:
+        return
+
+    rotated_file = get_rotated_notification_file()
+    try:
+        rotated_file.unlink()
+    except FileNotFoundError:
+        pass
+    queue_file.replace(rotated_file)
+
+
+def append_notification(notification, timeout_seconds=NOTIFICATION_LOCK_TIMEOUT_SECONDS):
+    data_dir = get_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = get_notification_lock_file()
+    queue_file = get_notification_file()
+
+    if fcntl is None:
+        message = 'fcntl is unavailable; notification queue append skipped'
+        log_hook_error(message)
+        return False, message
+
+    deadline = time.monotonic() + timeout_seconds
+    locked = False
+    try:
+        with lock_file.open('a+', encoding='utf-8') as lock:
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        message = 'notification lock timeout'
+                        log_hook_error(message)
+                        return False, message
+                    time.sleep(0.05)
+
+            rotate_notifications_if_needed()
+            with queue_file.open('a', encoding='utf-8') as queue:
+                queue.write(json.dumps(notification, ensure_ascii=False, separators=(',', ':')))
+                queue.write('\n')
+                queue.flush()
+                os.fsync(queue.fileno())
+        return True, None
+    except OSError as exc:
+        message = f'notification append failed: {exc}'
+        log_hook_error(message)
+        return False, message
+    finally:
+        if locked:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            except (NameError, OSError, ValueError):
+                pass
+
+
+def file_size(path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def status_payload():
     pid_info = read_pid_info()
     pid = pid_info.get('pid') if isinstance(pid_info.get('pid'), int) else None
     state_file = get_state_file()
     pid_file = get_pid_file()
+    notification_file = get_notification_file()
+    rotated_notification_file = get_rotated_notification_file()
+    notification_cursor_file = get_notification_cursor_file()
+    notification_lock_file = get_notification_lock_file()
     return {
         'running': is_process_running(pid),
         'pid': pid,
@@ -119,6 +270,15 @@ def status_payload():
         'stateFilePresent': state_file.exists(),
         'logFile': str(get_log_file()),
         'logFilePresent': get_log_file().exists(),
+        'notificationQueueFile': str(notification_file),
+        'notificationQueueFilePresent': notification_file.exists(),
+        'notificationQueueFileSize': file_size(notification_file),
+        'notificationRotatedFile': str(rotated_notification_file),
+        'notificationRotatedFilePresent': rotated_notification_file.exists(),
+        'notificationCursorFile': str(notification_cursor_file),
+        'notificationCursorFilePresent': notification_cursor_file.exists(),
+        'notificationLockFile': str(notification_lock_file),
+        'notificationLockFilePresent': notification_lock_file.exists(),
         'state': read_json(state_file),
     }
 
@@ -234,6 +394,30 @@ def stop_pet():
     return 1
 
 
+def notify_pet(source, event, message, level='info', ttl_seconds=120):
+    try:
+        notification = build_notification_event(
+            source=source,
+            event=event,
+            message=message,
+            level=level,
+            ttl_seconds=ttl_seconds,
+            raw={'source': 'vup_pet_launcher'},
+        )
+    except ValueError as exc:
+        print_json({'ok': False, 'error': str(exc)})
+        return 1
+
+    ok, error = append_notification(notification)
+    print_json({
+        'ok': ok,
+        'error': error,
+        'notification': notification,
+        'notificationQueueFile': str(get_notification_file()),
+    })
+    return 0
+
+
 def show_status():
     print_json(status_payload())
     return 0
@@ -245,6 +429,12 @@ def main(argv=None):
     subparsers.add_parser('start', help='start the VUP Pet')
     subparsers.add_parser('stop', help='stop the VUP Pet')
     subparsers.add_parser('status', help='show process and bridge status')
+    notify_parser = subparsers.add_parser('notify', help='append a hook notification event')
+    notify_parser.add_argument('--source', required=True, choices=sorted(SUPPORTED_NOTIFICATION_SOURCES))
+    notify_parser.add_argument('--event', required=True)
+    notify_parser.add_argument('--message', required=True)
+    notify_parser.add_argument('--level', default='info', choices=sorted(SUPPORTED_NOTIFICATION_LEVELS))
+    notify_parser.add_argument('--ttl-seconds', type=int, default=120)
 
     args = parser.parse_args(argv)
     if args.command == 'start':
@@ -253,6 +443,8 @@ def main(argv=None):
         return stop_pet()
     if args.command == 'status':
         return show_status()
+    if args.command == 'notify':
+        return notify_pet(args.source, args.event, args.message, args.level, args.ttl_seconds)
     return 1
 
 

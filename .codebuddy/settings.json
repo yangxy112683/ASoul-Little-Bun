@@ -1,0 +1,22 @@
+{
+  "enabledPlugins": {
+    "pyright-lsp@codebuddy-plugins-official": true
+  },
+  "env": {
+    "PATH": "/Users/dawn80s/work/personal/asoul_bongocat/ASoul-Little-Bun/.venv/bin:/Users/dawn80s/.nvm/versions/node/v20.19.6/bin:/Users/dawn80s/.npm-global/bin:/Users/dawn80s/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/dawn80s/work/personal/asoul_bongocat/ASoul-Little-Bun/hooks/vup_pet_notify.py --source codebuddy --event Notification",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
