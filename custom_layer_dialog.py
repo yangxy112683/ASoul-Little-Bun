@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                              QGroupBox, QGridLayout, QSlider, QDoubleSpinBox, QWidget,
                              QScrollArea, QFormLayout, QApplication, QSizePolicy)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QFont, QPixmap, QIcon
 from path_manager import path_manager
 from custom_layer_manager import (
     CustomLayer, DefaultLayer, CustomLayerManager,
@@ -164,7 +164,7 @@ class CustomLayerDialog(QDialog):
         self.apply_btn = QPushButton("应用")
         self.close_btn = QPushButton("关闭")
         self.apply_btn.clicked.connect(self.apply_changes)
-        self.close_btn.clicked.connect(self.close)
+        self.close_btn.clicked.connect(self._on_close_button_clicked)
         bottom_layout.addWidget(self.apply_btn)
         bottom_layout.addWidget(self.close_btn)
         right_outer.addLayout(bottom_layout)
@@ -600,7 +600,9 @@ class CustomLayerDialog(QDialog):
                 text = f"{layer.name} ({vis})"
             item = QListWidgetItem(text)
             if self._is_default_layer(layer):
-                item.setForeground(Qt.GlobalColor.darkBlue)
+                font = QFont(item.font())
+                font.setBold(True)
+                item.setFont(font)
             self.layer_list.addItem(item)
         self.layer_list.currentRowChanged.connect(self.on_layer_selected)
         if not self.all_layers:
@@ -986,31 +988,43 @@ class CustomLayerDialog(QDialog):
     def has_unsaved_changes(self):
         return self._make_snapshot() != self._saved_snapshot
 
-    def closeEvent(self, event):
-        # 关闭时确保取消按键预览
+    def _on_close_button_clicked(self):
+        self.reject()
+
+    def _confirm_close(self):
+        """确认是否关闭图层管理窗口。返回 True 表示可以关闭。"""
         self.keypress_preview_requested.emit(False)
-        if self.has_unsaved_changes():
-            reply = QMessageBox.question(
-                self, "未保存的修改",
-                "您有未保存的修改，是否要保存？\n\n"
-                "是 - 保存并关闭\n否 - 不保存直接关闭\n取消 - 返回继续编辑",
-                QMessageBox.StandardButton.Yes |
-                QMessageBox.StandardButton.No |
-                QMessageBox.StandardButton.Cancel
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.apply_changes()
-                event.accept()
-            elif reply == QMessageBox.StandardButton.No:
-                # 恢复主窗口到已保存状态
-                self.layers_applied.emit(None)
-                event.accept()
-            else:
-                event.ignore()
-                return
-        else:
+        if not self.has_unsaved_changes():
+            return True
+
+        reply = QMessageBox.question(
+            self, "未保存的修改",
+            "您有未保存的修改，是否要保存？\n\n"
+            "是 - 保存并关闭\n否 - 不保存直接关闭\n取消 - 返回继续编辑",
+            QMessageBox.StandardButton.Yes |
+            QMessageBox.StandardButton.No |
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.apply_changes()
+            return True
+        if reply == QMessageBox.StandardButton.No:
+            # 恢复主窗口到已保存状态
+            self.layers_applied.emit(None)
+            return True
+        return False
+
+    def reject(self):
+        """关闭按钮和 Esc 的安全关闭入口。"""
+        if self._confirm_close():
+            self.done(QDialog.DialogCode.Rejected)
+
+    def closeEvent(self, event):
+        """窗口左上角关闭按钮的安全关闭入口。"""
+        if self._confirm_close():
             event.accept()
-        super().closeEvent(event)
+        else:
+            event.ignore()
 
     # ------------------------------------------------------------------
     # 快捷操作
