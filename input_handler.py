@@ -80,15 +80,15 @@ class InputHandler:
         if self.keyboard_listener:
             try:
                 self.keyboard_listener.stop()
-            except:
-                pass  # 忽略停止时的异常
+            except Exception:
+                pass
             self.keyboard_listener = None
             
         if self.mouse_listener:
             try:
                 self.mouse_listener.stop()
-            except:
-                pass  # 忽略停止时的异常
+            except Exception:
+                pass
             self.mouse_listener = None
     
     def _on_key_press(self, key):

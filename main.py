@@ -1,8 +1,6 @@
 import sys
 import json
 import os
-import faulthandler
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QMenu, QDialog, QMessageBox
@@ -21,12 +19,6 @@ from window_manager import WindowManager
 from custom_layer_manager import CustomLayerManager, CustomLayer, DefaultLayer, build_all_layers
 from custom_layer_dialog import CustomLayerDialog
 from path_manager import path_manager
-
-
-def _debug_log(message):
-    now = datetime.now().isoformat(timespec='milliseconds')
-    thread = threading.current_thread()
-    print(f"[{now}][main][thread={thread.name}:{thread.ident}] {message}", file=sys.stderr, flush=True)
 
 
 NOTIFICATION_DISPLAY_DURATION_MS = 30 * 1000
@@ -345,11 +337,9 @@ class ASoulLittleBun(QOpenGLWidget):
 
     def open_custom_layer_manager(self):
         """打开图层管理对话框"""
-        _debug_log("open_custom_layer_manager: enter")
         self.pause_input_monitoring()
 
         try:
-            _debug_log("open_custom_layer_manager: creating CustomLayerDialog")
             dialog = CustomLayerDialog(
                 self.custom_layer_manager, self,
                 character_name=self.character_manager.current_character,
@@ -362,15 +352,11 @@ class ASoulLittleBun(QOpenGLWidget):
             dialog.keypress_preview_requested.connect(
                 self._on_keypress_preview_requested)
 
-            _debug_log("open_custom_layer_manager: before dialog.exec")
-            result = dialog.exec()
-            _debug_log(f"open_custom_layer_manager: after dialog.exec result={result}")
+            dialog.exec()
             # All save/discard logic is handled via layers_applied signal in closeEvent
 
         finally:
-            _debug_log("open_custom_layer_manager: finally before resume_input_monitoring")
             self.resume_input_monitoring()
-            _debug_log("open_custom_layer_manager: finally after resume_input_monitoring")
 
     def on_custom_layers_preview(self, dialog):
         """实时预览回调"""
@@ -597,8 +583,8 @@ class ASoulLittleBun(QOpenGLWidget):
                 json.dump(payload, f, ensure_ascii=False, indent=2)
                 f.write('\n')
             os.replace(temp_file, cursor_file)
-        except OSError as exc:
-            _debug_log(f"_write_notification_cursor: failed {exc}")
+        except OSError:
+            pass
 
     def _drain_notifications(self):
         queue_file = self.notification_paths['queue']
@@ -621,8 +607,7 @@ class ASoulLittleBun(QOpenGLWidget):
                         continue
                     if isinstance(event, dict):
                         events.append(event)
-        except OSError as exc:
-            _debug_log(f"_drain_notifications: failed {exc}")
+        except OSError:
             return
 
         start_index = 0
@@ -696,31 +681,21 @@ class ASoulLittleBun(QOpenGLWidget):
 
     def pause_input_monitoring(self):
         """暂停输入响应，不销毁 pynput 监听器。"""
-        _debug_log("pause_input_monitoring: enter")
         self.input_paused = True
-        _debug_log("pause_input_monitoring: input_paused=True")
         if hasattr(self, 'mouse_timer'):
-            _debug_log("pause_input_monitoring: stopping mouse_timer")
             self.mouse_timer.stop()
         if hasattr(self, 'custom_layer_timer'):
-            _debug_log("pause_input_monitoring: stopping custom_layer_timer")
             self.custom_layer_timer.stop()
-        _debug_log("pause_input_monitoring: exit")
 
     def resume_input_monitoring(self):
         """恢复输入响应，不重建 pynput 监听器。"""
-        _debug_log("resume_input_monitoring: enter")
         self.input_paused = False
-        _debug_log("resume_input_monitoring: input_paused=False")
 
         # 恢复定时器
         if hasattr(self, 'mouse_timer'):
-            _debug_log("resume_input_monitoring: starting mouse_timer")
             self.mouse_timer.start(16)  # 约60fps
         if hasattr(self, 'custom_layer_timer'):
-            _debug_log("resume_input_monitoring: starting custom_layer_timer")
             self.custom_layer_timer.start(16)  # 约60fps
-        _debug_log("resume_input_monitoring: exit")
 
     def switch_to_character(self, character_name):
         """切换到指定角色"""
@@ -734,28 +709,23 @@ class ASoulLittleBun(QOpenGLWidget):
     def _handle_key_press(self, key_identifier):
         """处理按键按下"""
         if self.input_paused:
-            _debug_log(f"_handle_key_press: ignored while paused key={key_identifier}")
             return
         self.key_press_signal.emit(key_identifier)
 
     def _handle_key_release(self):
         """处理按键释放"""
         if self.input_paused:
-            _debug_log("_handle_key_release: ignored while paused")
             return
         self.key_release_signal.emit()
 
     def _handle_mouse_click(self, button, pressed):
         """处理鼠标点击"""
         if self.input_paused:
-            _debug_log(f"_handle_mouse_click: ignored while paused button={button} pressed={pressed}")
             return
-        _debug_log(f"_handle_mouse_click: emit button={button} pressed={pressed}")
         self.mouse_click_signal.emit(button, pressed)
 
     def _on_mouse_click_signal(self, button, pressed):
         """鼠标点击信号处理"""
-        _debug_log(f"_on_mouse_click_signal: enter button={button} pressed={pressed}")
         if pressed:
             if button == mouse.Button.left:
                 self.show_left_click()
@@ -1302,7 +1272,6 @@ class ASoulLittleBun(QOpenGLWidget):
 
     def closeEvent(self, event):
         """关闭事件"""
-        _debug_log("ASoulLittleBun.closeEvent: enter")
         # 保存窗口位置
         pos = self.pos()
         self.global_settings.set('window_x', pos.x())
@@ -1336,13 +1305,10 @@ class ASoulLittleBun(QOpenGLWidget):
         self.tray_manager.hide()
 
         event.accept()
-        _debug_log("ASoulLittleBun.closeEvent: accepted, calling QApplication.quit")
         QApplication.quit()
 
 
 if __name__ == '__main__':
-    faulthandler.enable(file=sys.stderr, all_threads=True)
-    _debug_log("__main__: faulthandler enabled")
     # 设置 OpenGL 渲染以支持 OBS 游戏捕获
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
 
@@ -1356,9 +1322,6 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    _debug_log("__main__: QApplication created, quitOnLastWindowClosed=False")
     pet = ASoulLittleBun()
-    _debug_log("__main__: pet created, before app.exec")
     exit_code = app.exec()
-    _debug_log(f"__main__: app.exec returned exit_code={exit_code}")
     sys.exit(exit_code)
