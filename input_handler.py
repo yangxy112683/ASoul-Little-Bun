@@ -41,14 +41,21 @@ class InputHandler:
         self.keyboard_target_x = None
         self.keyboard_animation = None
         
-        # 修饰键追踪（用于组合键显示）
-        self._modifier_keys = set()  # 当前按住的修饰键集合
-        # pynput Key 对象 -> 显示名称
+        # 修饰键追踪（用于组合键显示）。使用规范化分组，避免 press/release 左右键标识不一致导致修饰键残留。
+        self._modifier_keys = set()  # 当前按住的修饰键分组集合
+        self._MODIFIER_ALIASES = {
+            'ctrl_l': 'ctrl', 'ctrl_r': 'ctrl', 'ctrl': 'ctrl',
+            'shift_l': 'shift', 'shift_r': 'shift', 'shift': 'shift',
+            'alt_l': 'alt', 'alt_r': 'alt', 'alt': 'alt',
+            'alt_gr': 'alt_gr',
+            'cmd_l': 'cmd', 'cmd_r': 'cmd', 'cmd': 'cmd', 'super': 'cmd',
+        }
         self._MODIFIER_DISPLAY = {
-            'ctrl_l': 'Ctrl', 'ctrl_r': 'Ctrl', 'ctrl': 'Ctrl',
-            'shift_l': 'Shift', 'shift_r': 'Shift', 'shift': 'Shift',
-            'alt_l': 'Alt', 'alt_r': 'Alt', 'alt': 'Alt', 'alt_gr': 'AltGr',
-            'cmd_l': 'Win', 'cmd_r': 'Win', 'cmd': 'Win', 'super': 'Win',
+            'ctrl': 'Ctrl',
+            'shift': 'Shift',
+            'alt': 'Alt',
+            'alt_gr': 'AltGr',
+            'cmd': 'Win',
         }
         
         # 监听器
@@ -96,8 +103,9 @@ class InputHandler:
         key_identifier = self.get_key_identifier(key)
         
         # 如果是修饰键，记录到集合中
-        if key_identifier and key_identifier in self._MODIFIER_DISPLAY:
-            self._modifier_keys.add(key_identifier)
+        modifier_group = self._get_modifier_group(key_identifier)
+        if modifier_group:
+            self._modifier_keys.add(modifier_group)
         
         # 构造组合键标识符（用于按键显示）
         combined_identifier = self._build_combined_identifier(key_identifier)
@@ -106,31 +114,30 @@ class InputHandler:
     def _on_key_release(self, key):
         """键盘释放事件"""
         key_identifier = self.get_key_identifier(key)
-        # 释放修饰键时从集合中移除
-        if key_identifier and key_identifier in self._modifier_keys:
-            self._modifier_keys.discard(key_identifier)
+        # 释放修饰键时从集合中移除。按分组移除，兼容 cmd_l 按下但 cmd 释放等平台差异。
+        modifier_group = self._get_modifier_group(key_identifier)
+        if modifier_group:
+            self._modifier_keys.discard(modifier_group)
         self.key_release_callback()
+
+    def _get_modifier_group(self, key_identifier):
+        if not key_identifier:
+            return None
+        return self._MODIFIER_ALIASES.get(key_identifier)
     
     def _build_combined_identifier(self, key_identifier):
         """根据当前修饰键状态构造组合键标识符"""
         if not key_identifier:
             return key_identifier
         
-        # 收集当前激活的修饰键（去重，保持固定顺序）
+        # 收集当前激活的修饰键（保持固定顺序）
         active_modifiers = []
-        seen = set()
-        for mod_key in ['ctrl_l', 'ctrl_r', 'ctrl',
-                        'shift_l', 'shift_r', 'shift',
-                        'alt_l', 'alt_r', 'alt', 'alt_gr',
-                        'cmd_l', 'cmd_r', 'cmd', 'super']:
+        for mod_key in ['ctrl', 'shift', 'alt', 'alt_gr', 'cmd']:
             if mod_key in self._modifier_keys:
-                display = self._MODIFIER_DISPLAY[mod_key]
-                if display not in seen:
-                    seen.add(display)
-                    active_modifiers.append(display)
+                active_modifiers.append(self._MODIFIER_DISPLAY[mod_key])
         
         # 如果当前按键本身就是修饰键，直接返回原标识符（不组合）
-        if key_identifier in self._MODIFIER_DISPLAY:
+        if self._get_modifier_group(key_identifier):
             return key_identifier
         
         if active_modifiers:
