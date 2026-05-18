@@ -542,11 +542,6 @@ class ASoulLittleBun(QOpenGLWidget):
     def _init_notification_bridge(self):
         self.notification_paths = self._get_notification_paths()
         self.notification_paths['data_dir'].mkdir(parents=True, exist_ok=True)
-        _debug_log(
-            f"_init_notification_bridge: data_dir={self.notification_paths['data_dir']} "
-            f"queue={self.notification_paths['queue']} cursor={self.notification_paths['cursor']}"
-        )
-
         self.notification_watcher = QFileSystemWatcher(self)
         self.notification_watcher.directoryChanged.connect(
             self._on_notification_bridge_changed)
@@ -566,8 +561,7 @@ class ASoulLittleBun(QOpenGLWidget):
         data_dir = str(self.notification_paths['data_dir'])
         watched_dirs = set(self.notification_watcher.directories())
         if data_dir not in watched_dirs:
-            added = self.notification_watcher.addPath(data_dir)
-            _debug_log(f"_ensure_notification_watch_paths: add directory {data_dir} added={added}")
+            self.notification_watcher.addPath(data_dir)
 
         for watched_file in list(self.notification_watcher.files()):
             if not Path(watched_file).exists():
@@ -576,11 +570,9 @@ class ASoulLittleBun(QOpenGLWidget):
         queue_file = self.notification_paths['queue']
         watched_files = set(self.notification_watcher.files())
         if queue_file.exists() and str(queue_file) not in watched_files:
-            added = self.notification_watcher.addPath(str(queue_file))
-            _debug_log(f"_ensure_notification_watch_paths: add file {queue_file} added={added}")
+            self.notification_watcher.addPath(str(queue_file))
 
     def _on_notification_bridge_changed(self, path):
-        _debug_log(f"_on_notification_bridge_changed: path={path}")
         self._ensure_notification_watch_paths()
         self._drain_notifications()
 
@@ -610,14 +602,12 @@ class ASoulLittleBun(QOpenGLWidget):
 
     def _drain_notifications(self):
         queue_file = self.notification_paths['queue']
-        _debug_log(f"_drain_notifications: enter queue_exists={queue_file.exists()}")
         if not queue_file.exists():
             self._ensure_notification_watch_paths()
             return
 
         cursor = self._read_notification_cursor()
         last_consumed_id = cursor.get('lastConsumedId')
-        _debug_log(f"_drain_notifications: last_consumed_id={last_consumed_id}")
         events = []
         try:
             with queue_file.open('r', encoding='utf-8') as f:
@@ -643,10 +633,6 @@ class ASoulLittleBun(QOpenGLWidget):
                     break
 
         next_events = events[start_index:]
-        _debug_log(
-            f"_drain_notifications: events={len(events)} start_index={start_index} "
-            f"next_events={len(next_events)}"
-        )
         visible_events = []
         last_seen_id = None
         for event in next_events:
@@ -655,20 +641,14 @@ class ASoulLittleBun(QOpenGLWidget):
                 last_seen_id = event_id
             supported = self._is_supported_notification(event)
             expired = self._is_notification_expired(event) if supported else True
-            _debug_log(
-                f"_drain_notifications: event_id={event_id} source={event.get('source')} "
-                f"event={event.get('event')} level={event.get('level')} supported={supported} expired={expired}"
-            )
             if supported and not expired:
                 visible_events.append(event)
 
-        _debug_log(f"_drain_notifications: visible_events={len(visible_events)} last_seen_id={last_seen_id}")
         for event in visible_events:
             self._show_notification(event)
 
         if last_seen_id:
             self._write_notification_cursor(last_seen_id)
-            _debug_log(f"_drain_notifications: cursor updated last_seen_id={last_seen_id}")
 
     def _is_supported_notification(self, event):
         source = event.get('source')
@@ -705,24 +685,13 @@ class ASoulLittleBun(QOpenGLWidget):
             display_text = display_text[:119] + '…'
 
         self._update_notification_geometry()
-        _debug_log(
-            f"_show_notification: id={event.get('id')} level={event.get('level')} "
-            f"text={display_text!r} embedded=True parent_is_pet={self.notification_label.parent() is self} "
-            f"window_geometry={self.geometry().getRect()} geometry={self.notification_label.geometry().getRect()} "
-            f"content_offset_y={self.content_offset_y}"
-        )
         self.notification_label.setText(display_text)
         self.notification_label.show()
 
         duration = NOTIFICATION_DISPLAY_DURATION_MS
         self.notification_timer.start(duration)
-        _debug_log(
-            f"_show_notification: visible={self.notification_label.isVisible()} "
-            f"duration={duration} focus_policy={self.notification_label.focusPolicy().name}"
-        )
 
     def _hide_notification(self):
-        _debug_log("_hide_notification: hide notification label")
         self.notification_label.hide()
 
     def pause_input_monitoring(self):
@@ -826,11 +795,6 @@ class ASoulLittleBun(QOpenGLWidget):
 
         self.keypress_display_label.show()
         self.keypress_display_label.raise_()
-        _debug_log(
-            f"_show_keypress_display: text={display_text!r} "
-            f"geometry={self.keypress_display_label.geometry().getRect()} "
-            f"content_offset_y={self.content_offset_y}"
-        )
 
         # 重启定时器，1秒后隐藏
         self.keypress_display_timer.start(1000)
