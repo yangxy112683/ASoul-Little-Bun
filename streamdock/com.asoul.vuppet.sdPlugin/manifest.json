@@ -1,0 +1,44 @@
+{
+  "Actions": [
+    {
+      "Name": "启动桌宠",
+      "UUID": "com.asoul.vuppet.launch",
+      "Icon": "static/icon",
+      "Tooltip": "启动 ASoul Little Bun 桌宠",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "static/icon",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": true
+    }
+  ],
+  "SDKVersion": 2,
+  "Author": "dawn80s",
+  "Name": "ASoul VUP Pet",
+  "Icon": "static/icon",
+  "Category": "ASoul VUP Pet",
+  "CategoryIcon": "static/icon",
+  "CodePath": "bin/plugin.js",
+  "Description": "Adds a StreamDock key action to start the ASoul Little Bun desktop pet.",
+  "Version": "0.1.0",
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "13.0"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "2.9"
+  },
+  "Nodejs": {
+    "Version": "20"
+  },
+  "UUID": "com.asoul.vuppet"
+}

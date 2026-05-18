@@ -119,6 +119,7 @@ Thumbs.db
 # Project specific
 config.json
 global_config.json
+streamdock/**/node_modules/
 
 
 # Version control - DO NOT IGNORE
